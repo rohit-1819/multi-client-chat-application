@@ -29,3 +29,31 @@ This is a simple multi-client chat application implemented in C++ using TCP sock
 ```bash
 git clone https://github.com/your-username/cpp-multi-client-chat.git
 cd cpp-multi-client-chat
+```
+### 2️⃣ Build the Server and Client
+For Linux:
+```bash
+g++ server.cpp -o server -pthread
+g++ client.cpp -o client -pthread
+```
+### 3️⃣ Run the Application
+Start the Server:
+```bash
+./server
+```
+Start the Clients (in different terminals or devices):
+```bash
+./client
+```
+💡 For clients on different devices, replace 127.0.0.1 in client.cpp with the server's LAN IP address.
+
+## 🗺️ Network Flow
+```bash
++-----------+         +------------+
+|  Client 1 |  <--->  |            |
+|  Client 2 |  <--->  |   Server   |
+|  Client N |  <--->  |            |
++-----------+         +------------+
+```
+Clients connect to the server using TCP.
+Server broadcasts messages from one client to all others.
