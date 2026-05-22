@@ -1,56 +1,74 @@
 #include <iostream>
+#include <sys/socket.h>
+#include <arpa/inet.h> // Essential for inet_pton()
+#include <unistd.h>
 #include <thread>
 #include <cstring>
-#include <unistd.h>
-#include <arpa/inet.h>
 
-#define PORT 12345
-#define BUFFER_SIZE 1024
+using namespace std;
 
-void receive_messages(int socket_fd) {
-    char buffer[BUFFER_SIZE];
+// Worker thread for receiving
+void receive_handler(int socket_fd) {
+    char buffer[1024];
     while (true) {
-        memset(buffer, 0, BUFFER_SIZE);
-        int bytes_received = recv(socket_fd, buffer, BUFFER_SIZE, 0);
-        if (bytes_received <= 0) {
-            std::cout << "Disconnected from server." << std::endl;
-            close(socket_fd);
+        // clear the buffer
+        memset(buffer, 0, 1024);
+        
+        int bytes = recv(socket_fd, buffer, 1024, 0);
+
+        if (bytes <= 0) {
+            cout << "\n[Disconnected]" << endl;
             exit(0);
         }
-        std::cout << buffer << std::endl;
-    }
-}
 
-void send_messages(int socket_fd) {
-    std::string message;
-    while (true) {
-        std::getline(std::cin, message);
-        send(socket_fd, message.c_str(), message.size(), 0);
+        // 1. Wipe the current line and move cursor to the left
+        cout << "\033[2K\r";
+        cout << buffer << endl;
+        cout << "You: " << flush;
     }
 }
 
 int main() {
-    int client_socket = socket(AF_INET, SOCK_STREAM, 0);
-    sockaddr_in server_addr{};
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(PORT);
-    inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
+    // 1. Create the Socket (The hardware)
+    int client_fd = socket(AF_INET, SOCK_STREAM, 0);
 
-    if (connect(client_socket, (sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        std::cerr << "Connection failed!" << std::endl;
-        return 1;
+    // 2. Define the Server's "Address Label"
+    struct sockaddr_in serv_addr;
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(8080);
+    
+    // 3. Convert the IP address from text to binary
+    // Use "127.0.0.1" for local testing, or the Public IP for remote
+    inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr);
+
+    // 4. Reach out and connect!
+    if (connect(client_fd, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
+        cout << "Connection Failed!" << endl;
+        return -1;
     }
+    // std::cout << "Connected to the server successfully!" << std::endl;
 
-    char buffer[BUFFER_SIZE];
-    memset(buffer, 0, BUFFER_SIZE);
-    recv(client_socket, buffer, BUFFER_SIZE, 0);
-    std::cout << buffer;
-    std::string username;
-    std::getline(std::cin, username);
-    send(client_socket, username.c_str(), username.size(), 0);
+    string username;
+    cout << "Enter your chat name: ";
+    getline(cin, username);
+    
+    // Spin up the background listener
+    thread listener(receive_handler, client_fd);
+    listener.detach(); 
+  
+    // sender logic
+    string typed_msg;
+    while (true) {
+        cout << "You: " << endl;
+        getline(cin, typed_msg);
 
-    std::thread(receive_messages, client_socket).detach();
-    send_messages(client_socket);
+        // Combine the name and the message
+        string full_msg = username + ": " + typed_msg;
 
+        if (typed_msg == "/quit") break;
+
+        send(client_fd, full_msg.c_str(), full_msg.length(), 0);
+    }
+ 
     return 0;
 }

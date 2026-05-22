@@ -1,73 +1,115 @@
-#include <iostream>
-#include <thread>
-#include <vector>
-#include <map>
-#include <cstring>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <algorithm>
+#include<iostream>
+#include<sys/socket.h>
+#include<netinet/in.h>
+#include<unistd.h>
+#include<thread>
+#include<cstring>
+#include<vector>
+#include<algorithm>
+#include<mutex>
 
-#define PORT 12345
-#define BUFFER_SIZE 1024
+using namespace std;
 
-std::vector<int> clients;
-std::map<int, std::string> usernames;
+// Global list to track all active client sockets
+vector<int> clients;
+// Mutex to protect our vector from data corruption when multiple threads access it at once
+mutex clients_mutex;
 
-void broadcast(const std::string& message, int sender) {
-    for (int client : clients) {
-        if (client != sender) {
-            send(client, message.c_str(), message.size(), 0);
+// Function to send a message to every client EXCEPT the one who sent it
+void broadcast_message(string message, int sender_fd) {
+    lock_guard<mutex> lock(clients_mutex);
+    for (int client_fd : clients) {
+        if (client_fd != sender_fd) {
+            send(client_fd, message.c_str(), message.size(), 0);
         }
     }
 }
 
-void handle_client(int client_socket) {
-    char buffer[BUFFER_SIZE];
-    memset(buffer, 0, BUFFER_SIZE);
-    recv(client_socket, buffer, BUFFER_SIZE, 0);
-    usernames[client_socket] = buffer;
-    std::string join_msg = usernames[client_socket] + " has joined the chat.\n";
-    broadcast(join_msg, client_socket);
-
+// Thread worker function assigned to handle a single client's incoming traffic
+void handle_client(int client_fd) {
+    char buffer[1024];
     while (true) {
-        memset(buffer, 0, BUFFER_SIZE);
-        int bytes_received = recv(client_socket, buffer, BUFFER_SIZE, 0);
-        if (bytes_received <= 0) {
-            std::string leave_msg = usernames[client_socket] + " has left the chat.\n";
-            broadcast(leave_msg, client_socket);
-            close(client_socket);
+        memset(buffer, 0, 1024);
+        int bytes = recv(client_fd, buffer, 1024, 0);
 
-            // In the code:
-            clients.erase(std::remove(clients.begin(), clients.end(), client_socket), clients.end());
-
-            usernames.erase(client_socket);
+        if (bytes <= 0) {
+            cout << "Client disconnected." << endl;
+            close(client_fd);
             break;
         }
-        std::string message = usernames[client_socket] + ": " + buffer;
-        broadcast(message, client_socket);
-    }
+
+        buffer[bytes] = '\0'; // null-terminate the string
+        string msg(buffer);
+
+        cout << "[Relaying] Message from socket " << client_fd << ": " << msg << "\n";
+
+        // Relay the message to all other connected users
+        broadcast_message(msg, client_fd);
+    }    
+
+    // Clean up when the client leaves
+    close(client_fd);
+    
+    lock_guard<mutex> lock(clients_mutex);
+    clients.erase(remove(clients.begin(), clients.end(), client_fd), clients.end());
+
 }
 
 int main() {
+    // 1. Create the Socket (The Hardware)
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    sockaddr_in server_addr{};
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(PORT);
+    if (server_fd < 0) {
+        cerr << "Socket creation failed.\n";
+        return 1;
+    }
 
-    bind(server_fd, (sockaddr*)&server_addr, sizeof(server_addr));
-    listen(server_fd, 5);
+    // Allow quick reuse of the port to avoid "Address already in use" errors on restart
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-    std::cout << "Server listening on port " << PORT << std::endl;
+    // 2. Prepare the Mailing Label
+    struct sockaddr_in address;
+    address.sin_family = AF_INET;           // IPv4
+    address.sin_addr.s_addr = INADDR_ANY;   // Any interface
+    address.sin_port = htons(8080);          // port
+
+    // 3. Bind the socket to our address/port
+    if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
+        cerr << "Bind failed.\n";
+        return 1;
+    }
+
+    // 4. Start Listening
+    if (listen(server_fd, 10) < 0) {
+        cerr << "listen failed.\n";
+        return 1;
+    }
+
+    cout << "Server is listening on port 8080..." << endl;    
 
     while (true) {
-        sockaddr_in client_addr{};
-        socklen_t addr_len = sizeof(client_addr);
-        int client_socket = accept(server_fd, (sockaddr*)&client_addr, &addr_len);
-        clients.push_back(client_socket);
+        struct sockaddr_in client_addr;
+        socklen_t client_len = sizeof(client_addr);
 
-        send(client_socket, "Enter your username: ", 21, 0);
-        std::thread(handle_client, client_socket).detach();
+        // Blocks here until someone knocks, then pops out a custom conversation socket
+        int new_socket = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
+        
+        if (new_socket < 0) {
+            cerr << "Failed to accept client connection.\n";
+            continue;
+        }
+
+        std::cout << "[Server] New connection accepted! Socket FD: " << new_socket << "\n";
+
+        // Add the new client to our master tracking list safely using a lock
+        {
+            std::lock_guard<std::mutex> lock(clients_mutex);
+            clients.push_back(new_socket);
+        }
+
+        // Spawn a background worker thread for this client so main loop can instantly return to accept()
+        std::thread client_thread(handle_client, new_socket);
+        client_thread.detach(); // Detach allows the thread to manage its own lifecycle independently
     }
 
     close(server_fd);
